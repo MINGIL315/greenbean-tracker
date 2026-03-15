@@ -1,9 +1,12 @@
 """
 맥널티생두몰 (greenbeans.co.kr) 스크래퍼
 Cafe24 플랫폼 — 맥널티인터내셔널 운영 생두 전용몰
-URL: /product/list.html?cate_no=128 (전체)
-총 ~34개 상품, 3페이지
-원산지: 카테고리명 또는 상품명에서 추출
+
+실제 HTML 구조:
+- 목록: ul.product-list > li
+- 상품명: <span style="font-size:13px;color:#666666;">상품명</span>
+- 가격: <strong>21,000원</strong>
+- 상품 URL: /product/{slug}/{id}/category/{cate_no}/display/1/
 """
 import re
 import sys
@@ -17,13 +20,6 @@ from normalizer import normalize_origin
 
 BASE_URL = "https://greenbeans.co.kr"
 LIST_URL = f"{BASE_URL}/product/list.html?cate_no=128"
-
-# 원산지별 카테고리 (origin 파싱 보조용)
-ORIGIN_CATEGORIES = {
-    "42": "브라질", "35": "에티오피아", "47": "콜롬비아",
-    "48": "베트남", "49": "인도", "25": "아메리카",
-    "27": "아프리카", "26": "아시아", "28": "오세아니아",
-}
 
 
 class McNultyScraper(BaseScraper):
@@ -44,15 +40,14 @@ class McNultyScraper(BaseScraper):
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # Cafe24 표준 구조 시도 (커스텀 테마라도 ec-data- 속성은 유지되는 경우 많음)
-            items = [
-                li for li in soup.select("ul.prdList li.xans-record-, li[id^='anchorBoxId_'], .prdList li")
-                if li.get("id", "").startswith("anchorBoxId_") or li.select_one("[ec-data-price]")
-            ]
-
-            # 표준 구조 없으면 상품 링크 기반으로 파싱
+            # ul.product-list > li
+            items = soup.select("ul.product-list > li")
             if not items:
-                items = self._find_items_by_link(soup)
+                # fallback: 상품 링크가 있는 li 탐색
+                items = [
+                    li for li in soup.find_all("li")
+                    if li.find("a", href=re.compile(r"/product/[^/]+/\d+/"))
+                ]
 
             if not items:
                 print(f"  [{self.COMPANY_NAME}] 페이지 {page}: 상품 없음 → 종료")
@@ -78,68 +73,47 @@ class McNultyScraper(BaseScraper):
 
         return products
 
-    def _find_items_by_link(self, soup) -> list:
-        """상품 링크 패턴으로 상품 컨테이너 탐색"""
-        links = soup.find_all("a", href=re.compile(r"/product/[^/]+/\d+/"))
-        containers = []
-        seen = set()
-        for a in links:
-            parent = a.find_parent("li") or a.find_parent("div")
-            if parent and id(parent) not in seen:
-                seen.add(id(parent))
-                containers.append(parent)
-        return containers
-
     def _parse_item(self, item) -> dict | None:
-        # 상품명
+        # 상품명: span with inline style (font-size:13px;color:#666666;)
         name = ""
-        desc = item.select_one("div.description, .prdInfo, .name")
-        if desc:
-            name_el = desc.select_one("strong.name a, .prdName, .name a, a")
-            if name_el:
-                for hidden in name_el.select(".displaynone, .blind"):
-                    hidden.decompose()
-                name = name_el.get_text(" ", strip=True)
+        for span in item.find_all("span"):
+            style = span.get("style", "")
+            if "font-size" in style or "color" in style:
+                candidate = span.get_text(" ", strip=True)
+                if len(candidate) > 3:
+                    name = candidate
+                    break
+
+        # fallback: img alt 텍스트
         if not name:
-            # ec-data-price가 있는 a 태그에서 찾기
-            a = item.find("a", href=re.compile(r"/product/[^/]+/\d+/"))
-            if a:
-                for hidden in a.select(".displaynone, .blind"):
-                    hidden.decompose()
-                name = a.get_text(" ", strip=True)
+            img = item.find("img")
+            if img and img.get("alt"):
+                name = img["alt"].strip()
 
         name = re.sub(r"\s+", " ", name).strip()
         if not name:
             return None
 
-        # 가격: ec-data-price 속성 우선
-        desc_el = item.select_one("[ec-data-price]")
-        if desc_el:
-            price_attr = desc_el.get("ec-data-price", "")
-            price = int(price_attr) if price_attr.isdigit() else 0
-        else:
-            # 텍스트에서 가격 파싱
-            price_el = item.select_one(".price, .cost, strong, em")
-            price = self._parse_price(price_el.get_text(strip=True)) if price_el else 0
+        # 가격: <strong>21,000원</strong>
+        price = 0
+        for strong in item.find_all("strong"):
+            t = strong.get_text(strip=True)
+            if "원" in t or re.search(r"\d{4,}", t):
+                price = self._parse_price(t)
+                if price > 0:
+                    break
 
         if price <= 0:
             return None
 
-        # 품절
+        # 품절: 이미지에 soldout overlay 또는 품절 텍스트
         soldout_el = item.select_one(".soldout, .sold_out, [class*='soldout']")
         is_soldout = False
         if soldout_el:
             is_soldout = "displaynone" not in (soldout_el.get("class") or [])
 
         # 원산지: 상품명에서 추출
-        # 상품 URL에서 카테고리 코드 추출해 원산지 힌트 얻기
         origin_ko = self._extract_origin(name)
-        if not origin_ko:
-            a = item.find("a", href=re.compile(r"/product/"))
-            if a:
-                m = re.search(r"/category/(\d+)/", a.get("href", ""))
-                if m:
-                    origin_ko = ORIGIN_CATEGORIES.get(m.group(1))
 
         return {
             "company_name": self.COMPANY_NAME,
@@ -174,6 +148,7 @@ class McNultyScraper(BaseScraper):
         mapping = {
             "워시드": "Washed", "내추럴": "Natural", "허니": "Honey",
             "아나에로빅": "Anaerobic", "펄프드": "Pulped Natural",
+            "Washed": "Washed", "Natural": "Natural", "Honey": "Honey",
         }
         for k, v in mapping.items():
             if k in name:

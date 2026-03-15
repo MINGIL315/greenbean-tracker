@@ -41,9 +41,9 @@ class CoffeePlantScraper(BaseScraper):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             try:
-                page.goto(PRICE_URL, timeout=30000, wait_until="domcontentloaded")
+                page.goto(PRICE_URL, timeout=60000, wait_until="networkidle")
                 # 테이블이 로드될 때까지 대기
-                page.wait_for_selector("table", timeout=15000)
+                page.wait_for_selector("table", timeout=30000)
                 html = page.content()
             finally:
                 browser.close()
