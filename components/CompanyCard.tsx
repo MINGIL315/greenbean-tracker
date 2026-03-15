@@ -9,15 +9,16 @@ import ErrorBoundary from './ErrorBoundary'
 interface Props {
   company: CompanyWithProducts
   originFilter: string
+  searchQuery?: string
   onAlertClick?: (product: ProductWithPrices) => void
 }
 
-export default function CompanyCard({ company, originFilter, onAlertClick }: Props) {
-  const [open, setOpen] = useState(true)
+export default function CompanyCard({ company, originFilter, searchQuery = '', onAlertClick }: Props) {
+  const [open, setOpen] = useState(false)
 
-  const filteredProducts = originFilter
-    ? company.products.filter((p) => p.origin_country === originFilter)
-    : company.products
+  const filteredProducts = company.products
+    .filter((p) => !originFilter || p.origin_country === originFilter)
+    .filter((p) => !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()))
 
   const lastScraped = company.products
     .flatMap((p) => p.price_entries)

@@ -11,11 +11,17 @@ from alert_checker import AlertChecker
 from scrapers.coffee_libre import CoffeeLibreScraper
 from scrapers.coffee_sys import CoffeeSysScraper
 from scrapers.coffee_plant import CoffeePlantScraper
+from scrapers.hsung_coffee import HsungCoffeeScraper
+from scrapers.mcnulty import McNultyScraper
+from scrapers.bless_bean import BlessBeanScraper
 
 SCRAPERS = [
     CoffeeLibreScraper(),
     CoffeeSysScraper(),
     CoffeePlantScraper(),
+    HsungCoffeeScraper(),
+    McNultyScraper(),
+    BlessBeanScraper(),
     # 하이엔드커피: 사이트 접속 불가 (연결 거부)
     # 빈브라더스: 생두 카테고리 없음
 ]

@@ -13,6 +13,7 @@ export default function HomePage() {
   const [companies, setCompanies] = useState<CompanyWithProducts[]>([])
   const [loading, setLoading] = useState(true)
   const [originFilter, setOriginFilter] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const [alertProduct, setAlertProduct] = useState<ProductWithPrices | null>(null)
 
   useEffect(() => { fetchData() }, [])
@@ -52,6 +53,12 @@ export default function HomePage() {
     return dates.at(-1) ?? null
   }, [companies])
 
+  const sortedCompanies = useMemo(() => {
+    const libre = companies.filter((c) => c.name.includes('커피리브레'))
+    const others = companies.filter((c) => !c.name.includes('커피리브레'))
+    return [...others, ...libre]
+  }, [companies])
+
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 p-6 space-y-3">
@@ -78,10 +85,8 @@ export default function HomePage() {
             </span>
           </div>
 
-          {/* 마켓 티커 */}
-          <div className="flex-1 flex justify-center">
-            <MarketTicker />
-          </div>
+          {/* 가운데 여백 */}
+          <div className="flex-1" />
 
           {/* 우측 컨트롤 */}
           <div className="flex items-center gap-3 shrink-0">
@@ -91,19 +96,37 @@ export default function HomePage() {
         </div>
       </header>
 
+      {/* 마켓 티커 바 */}
+      <div className="border-b border-zinc-800/60 bg-zinc-950/60">
+        <div className="max-w-7xl mx-auto px-6 h-9 flex items-center justify-center">
+          <MarketTicker />
+        </div>
+      </div>
+
       {/* 본문 */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-3">
-        {companies.length === 0 ? (
+        {/* 검색창 */}
+        <div className="flex justify-center pb-2">
+          <input
+            type="text"
+            placeholder="상품명 검색..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-colors"
+          />
+        </div>
+        {sortedCompanies.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-32 text-zinc-600">
             <div className="text-4xl mb-4">⚠️</div>
             <p className="text-sm">데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.</p>
           </div>
         ) : (
-          companies.map((company) => (
+          sortedCompanies.map((company) => (
             <CompanyCard
               key={company.id}
               company={company}
               originFilter={originFilter}
+              searchQuery={searchQuery}
               onAlertClick={setAlertProduct}
             />
           ))
