@@ -1,6 +1,19 @@
 'use client'
 
 import { useEffect, useState, useMemo } from 'react'
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable'
 import { supabase } from '@/lib/supabase'
 import { CompanyWithProducts, ProductWithPrices } from '@/types'
 import CompanyCard from '@/components/CompanyCard'
@@ -9,12 +22,19 @@ import LastUpdatedBadge from '@/components/LastUpdatedBadge'
 import AlertModal from '@/components/AlertModal'
 import MarketTicker from '@/components/MarketTicker'
 
+const ORDER_KEY = 'greenbean_company_order'
+
 export default function HomePage() {
   const [companies, setCompanies] = useState<CompanyWithProducts[]>([])
+  const [orderedIds, setOrderedIds] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [originFilter, setOriginFilter] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [alertProduct, setAlertProduct] = useState<ProductWithPrices | null>(null)
+
+  const sensors = useSensors(useSensor(PointerSensor, {
+    activationConstraint: { distance: 5 },
+  }))
 
   useEffect(() => { fetchData() }, [])
 
@@ -37,9 +57,28 @@ export default function HomePage() {
         })),
       }))
       setCompanies(sorted)
+
+      // 저장된 순서 불러오기, 없으면 커피리브레를 마지막으로
+      const saved = localStorage.getItem(ORDER_KEY)
+      if (saved) {
+        const savedIds: string[] = JSON.parse(saved)
+        const allIds = sorted.map((c: any) => String(c.id))
+        const validIds = savedIds.filter((id) => allIds.includes(id))
+        const newIds = allIds.filter((id) => !validIds.includes(id))
+        setOrderedIds([...validIds, ...newIds])
+      } else {
+        const libre = sorted.filter((c: any) => c.name.includes('커피리브레'))
+        const others = sorted.filter((c: any) => !c.name.includes('커피리브레'))
+        setOrderedIds([...others, ...libre].map((c: any) => String(c.id)))
+      }
     }
     setLoading(false)
   }
+
+  const orderedCompanies = useMemo(() => {
+    const map = new Map(companies.map((c) => [String(c.id), c]))
+    return orderedIds.map((id) => map.get(id)).filter(Boolean) as CompanyWithProducts[]
+  }, [companies, orderedIds])
 
   const allOrigins = useMemo(() => {
     const set = new Set<string>()
@@ -53,11 +92,15 @@ export default function HomePage() {
     return dates.at(-1) ?? null
   }, [companies])
 
-  const sortedCompanies = useMemo(() => {
-    const libre = companies.filter((c) => c.name.includes('커피리브레'))
-    const others = companies.filter((c) => !c.name.includes('커피리브레'))
-    return [...others, ...libre]
-  }, [companies])
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIndex = orderedIds.indexOf(String(active.id))
+    const newIndex = orderedIds.indexOf(String(over.id))
+    const newOrder = arrayMove(orderedIds, oldIndex, newIndex)
+    setOrderedIds(newOrder)
+    localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder))
+  }
 
   if (loading) {
     return (
@@ -115,21 +158,26 @@ export default function HomePage() {
             className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-colors"
           />
         </div>
-        {sortedCompanies.length === 0 ? (
+
+        {orderedCompanies.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-32 text-zinc-600">
             <div className="text-4xl mb-4">⚠️</div>
             <p className="text-sm">데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.</p>
           </div>
         ) : (
-          sortedCompanies.map((company) => (
-            <CompanyCard
-              key={company.id}
-              company={company}
-              originFilter={originFilter}
-              searchQuery={searchQuery}
-              onAlertClick={setAlertProduct}
-            />
-          ))
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={orderedIds} strategy={verticalListSortingStrategy}>
+              {orderedCompanies.map((company) => (
+                <CompanyCard
+                  key={company.id}
+                  company={company}
+                  originFilter={originFilter}
+                  searchQuery={searchQuery}
+                  onAlertClick={setAlertProduct}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
         )}
       </main>
 
