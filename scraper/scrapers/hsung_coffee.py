@@ -1,10 +1,10 @@
 """
 후성커피 (fscoffee.kr) 스크래퍼
-Firstmall 플랫폼 — 상품 목록이 goodsSearch() AJAX로 동적 로딩
-→ Playwright + networkidle 대기
+Firstmall 플랫폼 — goodsSearch() AJAX 동적 로딩
+→ Playwright + page.evaluate() 로 렌더링 후 JS로 직접 추출
 
 카테고리별 URL: /goods/catalog?code=XXXX
-원산지: 상품명 앞에 괄호로 포함 (예: "(에티오피아) 구지 우라가 G1")
+원산지: 상품명에 괄호로 포함 (예: "(에티오피아) 구지 우라가 G1")
 """
 import re
 import sys
@@ -26,6 +26,43 @@ CATEGORY_CODES = [
     ("0013", "페루"),
 ]
 
+# 렌더링 후 JS로 상품 추출
+EXTRACT_JS = """() => {
+    const results = [];
+    const lis = document.querySelectorAll('li');
+    lis.forEach(li => {
+        const link = li.querySelector('a[href*="/goods/view"]');
+        if (!link) return;
+
+        // 상품명
+        let name = '';
+        const nameEl = li.querySelector('.goods_name, .name, h3, h4, dt, .item_name, .tit');
+        if (nameEl) name = nameEl.innerText.trim();
+        if (!name) {
+            const img = li.querySelector('img');
+            if (img) name = (img.alt || '').trim();
+        }
+        if (!name) name = link.innerText.trim();
+
+        // 가격
+        let priceText = '';
+        const priceEl = li.querySelector('.price, .goods_price, .selling_price, .item_price, em, strong');
+        if (priceEl) priceText = priceEl.innerText.trim();
+        if (!priceText) {
+            const m = li.innerText.match(/[\\d,]+원/);
+            if (m) priceText = m[0];
+        }
+
+        // 품절
+        const soldout = !!li.querySelector('.soldout, .sold_out, [class*="soldout"]');
+
+        if (name && priceText) {
+            results.push({ name, priceText, soldout });
+        }
+    });
+    return results;
+}"""
+
 
 class HsungCoffeeScraper(BaseScraper):
     COMPANY_NAME = "후성커피"
@@ -39,6 +76,7 @@ class HsungCoffeeScraper(BaseScraper):
 
         products = []
         seen_names = set()
+        debug_printed = False
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -50,18 +88,26 @@ class HsungCoffeeScraper(BaseScraper):
             for code, origin_hint in CATEGORY_CODES:
                 url = f"{BASE_URL}/goods/catalog?code={code}&per=40"
                 try:
-                    # networkidle: 모든 AJAX 완료까지 대기
                     pw_page.goto(url, timeout=30000, wait_until="networkidle")
-                    time.sleep(1)  # 추가 렌더링 대기
-                    html = pw_page.content()
+                    time.sleep(1)
 
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(html, "html.parser")
+                    # JS로 렌더링된 DOM에서 직접 추출
+                    raw = pw_page.evaluate(EXTRACT_JS)
 
-                    page_products = self._extract_products(soup, origin_hint)
-                    new_items = [p for p in page_products if p["product_name"] not in seen_names]
-                    for p in new_items:
-                        seen_names.add(p["product_name"])
+                    # 첫 번째 카테고리에서 디버그 출력
+                    if not debug_printed:
+                        print(f"  [{self.COMPANY_NAME}] JS 추출 샘플: {raw[:3]}")
+                        debug_printed = True
+
+                    new_items = []
+                    for r in raw:
+                        if r["name"] in seen_names:
+                            continue
+                        product = self._make_product(r, origin_hint)
+                        if product:
+                            seen_names.add(r["name"])
+                            new_items.append(product)
+
                     products.extend(new_items)
                     print(f"  [{self.COMPANY_NAME}] {origin_hint}: {len(new_items)}개")
 
@@ -73,92 +119,14 @@ class HsungCoffeeScraper(BaseScraper):
 
         return products
 
-    def _extract_products(self, soup, origin_hint: str) -> list[dict]:
-        """
-        Firstmall 렌더링 후 상품 요소 추출.
-        가격 텍스트(원)를 포함하는 li/div 요소를 탐색.
-        """
-        from bs4 import BeautifulSoup
-        products = []
-
-        # Firstmall 일반 상품 목록 셀렉터 후보
-        items = (
-            soup.select("ul.goods_list > li")
-            or soup.select("#goodsList li")
-            or soup.select(".goods_list_wrap li")
-            or soup.select("ul[class*='goods'] li")
-            or soup.select("div[class*='goods_item']")
-        )
-
-        # 셀렉터 실패 시: 가격 텍스트를 포함하는 li 요소 탐색
-        if not items:
-            items = [
-                li for li in soup.find_all("li")
-                if re.search(r"\d{4,}원", li.get_text())
-                and li.find("a", href=re.compile(r"/goods/view"))
-            ]
-
-        for item in items:
-            try:
-                product = self._parse_item(item, origin_hint)
-                if product:
-                    products.append(product)
-            except Exception:
-                continue
-
-        return products
-
-    def _parse_item(self, item, origin_hint: str) -> dict | None:
-        # 상품명: a[href*='view'] 텍스트, h3, .goods_name, .name 순으로 시도
-        name = ""
-        for sel in [".goods_name", ".name", "h3", "dt", "strong"]:
-            el = item.select_one(sel)
-            if el:
-                candidate = el.get_text(" ", strip=True)
-                candidate = re.sub(r"\s+", " ", candidate).strip()
-                if len(candidate) > 3:
-                    name = candidate
-                    break
-
-        if not name:
-            a = item.find("a", href=re.compile(r"/goods/view"))
-            if a:
-                name = a.get_text(" ", strip=True).strip()
-                name = re.sub(r"\s+", " ", name).strip()
-
-        if not name:
+    def _make_product(self, raw: dict, origin_hint: str) -> dict | None:
+        name = re.sub(r"\s+", " ", raw["name"]).strip()
+        if not name or len(name) < 3:
             return None
 
-        # 가격: "원" 포함 텍스트에서 숫자 추출
-        price = 0
-        for sel in [".price", ".goods_price", ".selling_price", "em", "strong", "span"]:
-            for el in item.select(sel):
-                t = el.get_text(strip=True)
-                if "원" in t:
-                    p = self._parse_price(t)
-                    if p > 0:
-                        price = p
-                        break
-            if price > 0:
-                break
-
-        # 전체 텍스트에서 가격 패턴 탐색 (fallback)
-        if price <= 0:
-            all_text = item.get_text()
-            matches = re.findall(r"([\d,]+)원", all_text)
-            for m in matches:
-                p = int(re.sub(r"[^\d]", "", m))
-                if p >= 1000:
-                    price = p
-                    break
-
+        price = self._parse_price(raw.get("priceText", ""))
         if price <= 0:
             return None
-
-        is_soldout = bool(
-            item.select_one(".soldout, .sold_out, [class*='soldout']")
-            or item.find("img", alt=re.compile(r"품절"))
-        )
 
         origin_ko = self._extract_origin(name) or origin_hint
 
@@ -170,13 +138,16 @@ class HsungCoffeeScraper(BaseScraper):
             "variety": None,
             "process_method": self._extract_process(name),
             "base_price_per_kg": price,
-            "is_in_stock": not is_soldout,
+            "is_in_stock": not raw.get("soldout", False),
             "tiers": [],
         }
 
     def _parse_price(self, text: str) -> int:
         cleaned = re.sub(r"[^\d]", "", text)
-        return int(cleaned) if cleaned else 0
+        if not cleaned:
+            return 0
+        val = int(cleaned)
+        return val if 100 <= val <= 10_000_000 else 0
 
     def _extract_origin(self, name: str | None) -> str | None:
         if not name:

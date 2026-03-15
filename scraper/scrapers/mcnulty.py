@@ -1,12 +1,12 @@
 """
 맥널티생두몰 (greenbeans.co.kr) 스크래퍼
-Cafe24 플랫폼 — 맥널티인터내셔널 운영 생두 전용몰
+Cafe24 플랫폼
 
 실제 HTML 구조:
 - 목록: ul.product-list > li
 - 상품명: <span style="font-size:13px;color:#666666;">상품명</span>
+          또는 img alt 텍스트
 - 가격: <strong>21,000원</strong>
-- 상품 URL: /product/{slug}/{id}/category/{cate_no}/display/1/
 """
 import re
 import sys
@@ -39,11 +39,10 @@ class McNultyScraper(BaseScraper):
                 break
 
             soup = BeautifulSoup(html, "html.parser")
-
-            # ul.product-list > li
             items = soup.select("ul.product-list > li")
+
             if not items:
-                # fallback: 상품 링크가 있는 li 탐색
+                # fallback: 상품 링크가 포함된 li
                 items = [
                     li for li in soup.find_all("li")
                     if li.find("a", href=re.compile(r"/product/[^/]+/\d+/"))
@@ -52,6 +51,10 @@ class McNultyScraper(BaseScraper):
             if not items:
                 print(f"  [{self.COMPANY_NAME}] 페이지 {page}: 상품 없음 → 종료")
                 break
+
+            # 첫 페이지 첫 항목 구조 디버그 출력
+            if page == 1 and items:
+                print(f"  [{self.COMPANY_NAME}] 첫 항목 HTML: {str(items[0])[:500]}")
 
             print(f"  [{self.COMPANY_NAME}] 페이지 {page}: {len(items)}개 발견")
 
@@ -63,7 +66,6 @@ class McNultyScraper(BaseScraper):
                 except Exception as e:
                     print(f"  [{self.COMPANY_NAME}] 상품 파싱 오류: {e}")
 
-            # 다음 페이지 확인
             has_next = bool(soup.select_one(f"a[href*='page={page + 1}']"))
             if not has_next:
                 break
@@ -74,45 +76,57 @@ class McNultyScraper(BaseScraper):
         return products
 
     def _parse_item(self, item) -> dict | None:
-        # 상품명: span with inline style (font-size:13px;color:#666666;)
+        # 상품명 1순위: span[style*="font-size:13px"]
         name = ""
-        for span in item.find_all("span"):
-            style = span.get("style", "")
-            if "font-size" in style or "color" in style:
-                candidate = span.get_text(" ", strip=True)
-                if len(candidate) > 3:
-                    name = candidate
-                    break
+        name_span = item.select_one('span[style*="font-size:13px"]')
+        if name_span:
+            name = name_span.get_text(" ", strip=True)
 
-        # fallback: img alt 텍스트
+        # 2순위: img alt
         if not name:
-            img = item.find("img")
-            if img and img.get("alt"):
+            img = item.find("img", alt=True)
+            if img and img["alt"].strip():
                 name = img["alt"].strip()
+
+        # 3순위: 상품 링크 텍스트
+        if not name:
+            a = item.find("a", href=re.compile(r"/product/[^/]+/\d+/"))
+            if a:
+                for hidden in a.select(".displaynone, .blind"):
+                    hidden.decompose()
+                name = a.get_text(" ", strip=True)
 
         name = re.sub(r"\s+", " ", name).strip()
         if not name:
             return None
 
-        # 가격: <strong>21,000원</strong>
+        # 가격: strong 태그 중 "원" 포함 또는 4자리 이상 숫자 포함
         price = 0
         for strong in item.find_all("strong"):
             t = strong.get_text(strip=True)
-            if "원" in t or re.search(r"\d{4,}", t):
+            if "원" in t:
                 price = self._parse_price(t)
                 if price > 0:
                     break
 
+        # 가격 fallback: "N,NNN원" 패턴 직접 탐색
         if price <= 0:
+            all_text = item.get_text()
+            matches = re.findall(r"([\d,]+)원", all_text)
+            for m in matches:
+                p = int(re.sub(r"[^\d]", "", m))
+                if 1000 <= p <= 10_000_000:
+                    price = p
+                    break
+
+        if price <= 0:
+            print(f"  [{self.COMPANY_NAME}] 가격 파싱 실패: {name[:30]}")
             return None
 
-        # 품절: 이미지에 soldout overlay 또는 품절 텍스트
+        # 품절
         soldout_el = item.select_one(".soldout, .sold_out, [class*='soldout']")
-        is_soldout = False
-        if soldout_el:
-            is_soldout = "displaynone" not in (soldout_el.get("class") or [])
+        is_soldout = bool(soldout_el) and "displaynone" not in (soldout_el.get("class") or [])
 
-        # 원산지: 상품명에서 추출
         origin_ko = self._extract_origin(name)
 
         return {
@@ -129,7 +143,11 @@ class McNultyScraper(BaseScraper):
 
     def _parse_price(self, text: str) -> int:
         cleaned = re.sub(r"[^\d]", "", text)
-        return int(cleaned) if cleaned else 0
+        if not cleaned:
+            return 0
+        val = int(cleaned)
+        # 비정상적으로 큰 값 제거
+        return val if val <= 10_000_000 else 0
 
     def _extract_origin(self, name: str) -> str | None:
         origins = [

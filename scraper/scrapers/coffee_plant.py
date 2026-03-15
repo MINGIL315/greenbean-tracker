@@ -175,7 +175,7 @@ class CoffeePlantScraper(BaseScraper):
         # 가장 큰 숫자 선택
         for n in sorted(nums, key=lambda x: -int(x)):
             val = int(n)
-            if val >= 1000:
+            if 1000 <= val <= 5_000_000:  # 비정상 가격 상한선 500만원
                 return val
         return 0
 
