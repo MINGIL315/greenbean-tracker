@@ -76,19 +76,23 @@ class McNultyScraper(BaseScraper):
         return products
 
     def _parse_item(self, item) -> dict | None:
-        # 상품명 1순위: span[style*="font-size:13px"]
+        # 상품명: Cafe24 표준 구조 (coffee_sys.py와 동일)
         name = ""
-        name_span = item.select_one('span[style*="font-size:13px"]')
-        if name_span:
-            name = name_span.get_text(" ", strip=True)
+        desc = item.select_one("div.description")
+        if desc:
+            name_el = desc.select_one("strong.name a")
+            if name_el:
+                for hidden in name_el.select("span.displaynone, .title.displaynone"):
+                    hidden.decompose()
+                name = name_el.get_text(" ", strip=True)
 
-        # 2순위: img alt
+        # fallback: img alt
         if not name:
             img = item.find("img", alt=True)
             if img and img["alt"].strip():
                 name = img["alt"].strip()
 
-        # 3순위: 상품 링크 텍스트
+        # fallback: 상품 링크 텍스트
         if not name:
             a = item.find("a", href=re.compile(r"/product/[^/]+/\d+/"))
             if a:
@@ -100,16 +104,15 @@ class McNultyScraper(BaseScraper):
         if not name:
             return None
 
-        # 가격: strong 태그 중 "원" 포함 또는 4자리 이상 숫자 포함
+        # 가격: Cafe24 ec-data-price 속성 우선
         price = 0
-        for strong in item.find_all("strong"):
-            t = strong.get_text(strip=True)
-            if "원" in t:
-                price = self._parse_price(t)
-                if price > 0:
-                    break
+        desc = item.select_one("div.description, [ec-data-price]")
+        if desc:
+            price_attr = desc.get("ec-data-price", "")
+            if price_attr and price_attr.isdigit():
+                price = int(price_attr)
 
-        # 가격 fallback: "N,NNN원" 패턴 직접 탐색
+        # fallback: "N,NNN원" 패턴 탐색
         if price <= 0:
             all_text = item.get_text()
             matches = re.findall(r"([\d,]+)원", all_text)

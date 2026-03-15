@@ -44,20 +44,27 @@ EXTRACT_JS = """() => {
         }
         if (!name) name = link.innerText.trim();
 
-        // 가격
+        // 가격: "원" 또는 "₩" 포함 텍스트에서 추출
         let priceText = '';
-        const priceEl = li.querySelector('.price, .goods_price, .selling_price, .item_price, em, strong');
-        if (priceEl) priceText = priceEl.innerText.trim();
+        const allText = li.innerText || '';
+        const priceMatch = allText.match(/[\\d,]+원/) || allText.match(/[₩￦][\\d,]+/);
+        if (priceMatch) priceText = priceMatch[0];
+        // 가격 element에서 직접 추출 시도
         if (!priceText) {
-            const m = li.innerText.match(/[\\d,]+원/);
-            if (m) priceText = m[0];
+            const priceEl = li.querySelector('.price, .goods_price, .selling_price, .item_price');
+            if (priceEl) {
+                const t = priceEl.innerText.trim();
+                if (/\\d{4,}/.test(t.replace(/,/g, ''))) priceText = t;
+            }
         }
 
-        // 품절
-        const soldout = !!li.querySelector('.soldout, .sold_out, [class*="soldout"]');
+        // 품절: SOLD OUT 텍스트 또는 soldout 클래스
+        const isSoldout = allText.includes('SOLD OUT') ||
+                          allText.includes('품절') ||
+                          !!li.querySelector('.soldout, .sold_out, [class*="soldout"]');
 
-        if (name && priceText) {
-            results.push({ name, priceText, soldout });
+        if (name && (priceText || isSoldout)) {
+            results.push({ name, priceText, soldout: isSoldout });
         }
     });
     return results;
@@ -125,8 +132,13 @@ class HsungCoffeeScraper(BaseScraper):
             return None
 
         price = self._parse_price(raw.get("priceText", ""))
-        if price <= 0:
+        is_soldout = raw.get("soldout", False)
+
+        # 품절 상품은 가격 없어도 저장 (is_in_stock=False, price=0 제외)
+        if price <= 0 and not is_soldout:
             return None
+        if price <= 0:
+            return None  # 가격 없는 품절은 저장 불가 (DB 제약)
 
         origin_ko = self._extract_origin(name) or origin_hint
 
